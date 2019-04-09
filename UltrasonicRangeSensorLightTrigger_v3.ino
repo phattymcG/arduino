@@ -1,12 +1,14 @@
 /***************************************************************************/	
-//	Function: Trigger a fade-up of lights when motion is detected.
-//	Hardware: Passive Infrared (PIR) sensor, digital RGB LED strip with
-//            TM1803 chipset (3 LEDs per pixel)
-//  Arduino: Uno
-//	Arduino IDE: Arduino-1.6.6
-//	Author:	 Patrick		
-//	Date: 	 Dec 2014
-//	Version: v1.0
+//	Function: Measure the distance to obstacles in front and print the distance
+//			  value to the serial terminal.The measured distance is from 
+//			  the range 0 to 400cm(157 inches).
+//	Hardware: Ultrasonic Range sensor
+//	Arduino IDE: Arduino-1.0
+//	Author:	 LG		
+//	Date: 	 Jan 17,2013
+//	Version: v1.0 modified by FrankieChu
+//           v2.0 heavily modified by PhattyMcG
+//	by www.seeedstudio.com
 //
 //  This library is free software; you can redistribute it and/or
 //  modify it under the terms of the GNU Lesser General Public
@@ -24,127 +26,162 @@
 //
 /*****************************************************************************/
 #include "Arduino.h"
-#include <FastLED.h>
+class Ultrasonic
+{
+	public:
+		Ultrasonic(int pin);
+    void DistanceMeasure(void);
+		long microsecondsToCentimeters(void);
+		// long microsecondsToInches(void);
+	private:
+		int _pin;//pin number of Arduino that is connected with SIG pin of Ultrasonic Ranger.
+        long duration;// the Pulse time received;
+};
+Ultrasonic::Ultrasonic(int pin)
+{
+	_pin = pin;
+}
 
-#define NUM_LEDS_INSIDE 10
-#define DATA_PIN_INSIDE 8
-#define SENSOR_PIN_INSIDE 2
-#define DATA_PIN_OUTSIDE 3 //this is actually just the transistor base 
-                           //for the analog strip; must be a PWM pin
-#define SENSOR_PIN_OUTSIDE 7 
-#define ADJUST_PIN A0 // this sets the max brightness for the inside light
+/*Begin the detection and get the pulse back signal*/
+void Ultrasonic::DistanceMeasure(void)
+{
+  pinMode(_pin, OUTPUT);
+	digitalWrite(_pin, LOW);
+	delayMicroseconds(2); // change this to lengthen the pulse?
+	digitalWrite(_pin, HIGH);
+	delayMicroseconds(5); // change this to lengthen the delay between pulses?
+	digitalWrite(_pin,LOW);
+	pinMode(_pin,INPUT);
+	duration = pulseIn(_pin,HIGH); // http://arduino.cc/en/Reference/pulseIn
+                                       // "if value is HIGH, pulseIn() waits for the pin to go HIGH, starts timing, then waits for the pin to go LOW and stops timing"
+}
 
-#define FADE_AMOUNT 10 // how many points to fade the LED each iteration of the loop
-#define DELAY_TIME 10 // time (milliseconds) to pause between each iteration of the loop
-#define MAX_BRIGHTNESS_OUTSIDE 200
+/*The measured distance from the range 0 to 400 Centimeters*/
+long Ultrasonic::microsecondsToCentimeters(void)
+{
+	return duration/29/2;	
+}
 
-//the CGRB data type is from FastLED
-CRGB leds[NUM_LEDS_INSIDE];
+/*The measured distance from the range 0 to 157 Inches*/
+//long Ultrasonic::microsecondsToInches(void)
+//{
+//	return duration/74/2;	
+//}
 
-int sensorStateInside;
-int fadeRaw,fade,fadeOld;
-int brightnessInside = 0, brightnessOutside = 0;
-int counterInside = 0;
+Ultrasonic ultrasonic(7); // set signal (SIG) pin for sensor to 7
+long RangeInCentimeters;
+
+
+int triggerDistance = 200; // the distance (in cm) at which to trigger the lights
+int triggerPeriod = 1000;  // the period of time in msec over which to count
+                           // trigger events before starting the fade up loop
+const int triggerMemoryLength = 200; // number of data points to retain in triggerMemory
+int triggerMemory [triggerMemoryLength];  // variable to retain the number of triggering events (detect
+                     // ultrasound reflection less than triggerDistance
+                     // TO DO: set an element of the array  to 1 every 500 msec, then 
+                     // sum the elements every iteration of the void loop(), and if 
+                     // it's greater than the threshold, then call the fade up
+int triggerCounter = 0; // index of triggerMemory
+int triggerCount = 0; // count of trigger events in triggerMemory over triggerMemoryLength
+int triggerCountThreshold = 25; // threshold for triggerCounter, above which the lights
+                             // turn on, and below which they turn off
+//int triggerCounterDecreaseDelay = 500; // time in msec before decreasing the 
+                                       // triggerCounter
+int delayTimeOn = 200; // delay time (in multiples of the delayTime) once the lights are triggered to turn on
+int delayCounter = 0;
+
+int MOSFETPin = 10;       // pin for transistor gate; originally used a MOSFET!
+//int LightSensorPin = 4;  // pin for light sensor
+int brightness = 0;      // how bright the LED is; initialized to off
+int maxBrightness = 200; // how high to fade up the PWM for the lights range 0-255
+int fadeAmount = 10;     // how many points to fade the LED each iteration of the loop
+int delayTime = 10;      // time (milliseconds) to pause between each iteration of the 
+                         // main loop
+int i;
+
 
 void setup()
 {
   Serial.begin(9600);
-  
-  //set the Arduino pins
-  pinMode(ADJUST_PIN,INPUT);
-  pinMode(DATA_PIN_INSIDE, OUTPUT); 
-  pinMode(SENSOR_PIN_INSIDE, INPUT);
-  pinMode(SENSOR_PIN_OUTSIDE, INPUT);
-
-  // DATA_PIN_OUTSIDE must default to OUTPUT?
-  
-  //setup the inside strip with the FastLED library
-  FastLED.addLeds<TM1803, DATA_PIN_INSIDE>(leds, NUM_LEDS_INSIDE);
-
-  //set the color of the pixels
-  //the TM1803's red component is visually nearly
-  //twice as powerful as the green and blue, so
-  //it's scaled down to create an overall white light
-  for(int dot = 0; dot < NUM_LEDS_INSIDE; dot++)
-  {
-    leds[dot].red = 215;
-    leds[dot].green = 255;
-    leds[dot].blue = 235;
-  }
+  pinMode(MOSFETPin, OUTPUT); // set the transistor gate pin
+  //pinMode(LightSensorPin, INPUT);  // set the light sensor detection pin
 }
 
 void loop()
 {
-  //send state to outside lights
-  analogWrite(DATA_PIN_OUTSIDE, brightnessOutside);
-  //send state to inside lights
-  FastLED.setBrightness(brightnessInside);
-  FastLED.show();
 
-  //controls the fade speed, and also the reaction
-  //time to multiple sensor hits
-  delay(DELAY_TIME);
+  ultrasonic.DistanceMeasure();// get the current signal time;
+  RangeInCentimeters = ultrasonic.microsecondsToCentimeters();//convert the time to centimeters
 
-  sensorStateInside = digitalRead(SENSOR_PIN_INSIDE);
-  
-  //inside (stairwell) light
-  if (sensorStateInside==HIGH && counterInside == 0)
-  // sensor sees no movement
-  // fade down the lights!
-  {
-    if (brightnessInside > 0)
-    {
-      brightnessInside = brightnessInside - FADE_AMOUNT;
-      //make sure the brightness doesn't go
-      //negative
-      if (brightnessInside < 0){ brightnessInside = 0;}
-    }
-  }  
-  else
-  // sensor detecting movement
-  // fade up the lights!
-  // they stay on for 5 seconds after trigger
-  { 
-    Serial.println("Motion detected inside!");
-    Serial.println();
-    
-    //reset the counter if the sensor detects a new hit
-    if(sensorStateInside==LOW){ counterInside = 20 * 1000/DELAY_TIME;}
+	Serial.print("distance: ");
+	Serial.print(RangeInCentimeters);//0~750cm
+	Serial.println(" cm");
+        Serial.print("Brightness: ");
+        Serial.println(brightness);
+	delay(delayTime);
 
-    fadeRaw = analogRead(0);
-    fade = map(fadeRaw,0,1023,0,255);
-    
-    if (brightnessInside < fade)
-    {
-      brightnessInside = brightnessInside + FADE_AMOUNT;
-      if (brightnessInside > fade){ brightnessInside = fade;}
-      Serial.print("Brightness inside: ");
-      Serial.println(brightnessInside);
-    }
-    counterInside = counterInside - DELAY_TIME; 
+  //record triggering events in the array
+  if (RangeInCentimeters < triggerDistance) {
+    triggerMemory[triggerCounter] = 1;
+  } else {
+    triggerMemory[triggerCounter] = 0;
+  Serial.println("sum going down");
   }
-  
-  //outside light
 
-  if (digitalRead(SENSOR_PIN_OUTSIDE)==LOW)
-  // sensor sees no movement
-  // fade down the lights!
-  {
-    if (brightnessOutside > 0)
+  Serial.print("trigger counter: ");
+  Serial.println(triggerCounter);
+
+  //loop the index to the beginning once it reaches the max
+  //number of data points
+  if (triggerCounter < triggerMemoryLength - 1){
+    triggerCounter += 1;  
+  } else {
+    triggerCounter = 0;
+  }
+
+  triggerCount = 0;
+  // count the number of trigger events
+  for(i=0;i<triggerMemoryLength;i++){
+    triggerCount = triggerCount + triggerMemory[i];
+  }
+
+  Serial.print("trigger count: ");
+  Serial.println(triggerCount);
+
+  
+  if (triggerCount > triggerCountThreshold) {
+    // if the count goes above the threshold,  
+    // rangefinder is measuring something less 
+    // than the trigger distance
+    // fade up the lights!
+    //for (brightness=0; brightness < maxBrightness; fadeAmount)
+    while (brightness < maxBrightness)
     {
-      brightnessOutside = brightnessOutside - FADE_AMOUNT;
+      brightness = brightness + fadeAmount;
+      analogWrite(MOSFETPin, brightness);
+      delay(delayTime);
     }
-  }  
-  else
-  // sensor detecting movement
-  // fade up the lights!
-  { 
-    Serial.println("Motion detected outside!");
-    if (brightnessOutside < MAX_BRIGHTNESS_OUTSIDE)
-    {
-      brightnessOutside = brightnessOutside + FADE_AMOUNT;
-      Serial.print("Brightness outside: ");
-      Serial.println(brightnessOutside);
+    /*
+    // keep the lights on for delayTimeOn
+    delay(delayTimeOn);
+    //reset the count of trigger events so the delay
+    //doesn't slow down the void loop
+    for(i=0;i<triggerMemoryLength;i++){
+      triggerMemory[i]=0;
+    }
+    */
+  } else {
+    delayCounter++;
+    // there's nothing in front of the sensor
+    // fade down the lights!
+    if(delayCounter > delayTimeOn){
+      while (brightness > 0)
+      {
+       brightness = brightness - fadeAmount;
+       analogWrite(MOSFETPin, brightness);
+       delay(delayTime);
+      }
+      delayCounter = 0;
     }
   }
 }
